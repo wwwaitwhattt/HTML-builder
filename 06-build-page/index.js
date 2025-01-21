@@ -1,77 +1,56 @@
 const fs = require('fs');
 const path = require('path');
 
-const projectDistDir = path.join(__dirname, 'project-dist');
-const templatePath = path.join(__dirname, 'template.html');
+const projectDist = path.join(__dirname, 'project-dist');
+const templateFile = path.join(__dirname, 'template.html');
 const componentsDir = path.join(__dirname, 'components');
 const stylesDir = path.join(__dirname, 'styles');
 const assetsDir = path.join(__dirname, 'assets');
-const outputHtmlPath = path.join(projectDistDir, 'index.html');
-const outputCssPath = path.join(projectDistDir, 'style.css');
-const outputAssetsDir = path.join(projectDistDir, 'assets');
 
-fs.mkdirSync(projectDistDir, { recursive: true });
+fs.promises.mkdir(projectDist, { recursive: true }).then(async () => {
 
-fs.readFile(templatePath, 'utf-8', (err, templateData) => {
-  if (err) throw err;
+  const template = await fs.promises.readFile(templateFile, 'utf-8');
+  const tags = template.match(/{{(.*?)}}/g) || [];
 
-  const regex = /{{(.*?)}}/g;
-  let updatedTemplate = templateData;
-
-  let match;
-  while ((match = regex.exec(templateData)) !== null) {
-    const tag = match[1].trim();
-    const componentPath = path.join(componentsDir, `${tag}.html`);
-
+  let finalHtml = template;
+  for (const tag of tags) {
+    const componentName = tag.slice(2, -2).trim();
+    const componentPath = path.join(componentsDir, `${componentName}.html`);
     try {
-      const componentData = fs.readFileSync(componentPath, 'utf-8');
-      updatedTemplate = updatedTemplate.replace(match[0], componentData);
-    } catch (err) {
-      console.error(`error reading component for tag: {{${tag}}}`, err);
+      const component = await fs.promises.readFile(componentPath, 'utf-8');
+      finalHtml = finalHtml.replace(tag, component);
+    } catch (e) {
+      console.error(`component ${componentName} not found.`);
     }
   }
 
-  fs.writeFileSync(outputHtmlPath, updatedTemplate);
-  console.log('index.html created');
-});
+  await fs.promises.writeFile(path.join(projectDist, 'index.html'), finalHtml);
 
-fs.readdir(stylesDir, (err, files) => {
-  if (err) throw err;
-
+  const files = await fs.promises.readdir(stylesDir);
   const cssFiles = files.filter(file => path.extname(file) === '.css');
-  let cssContent = '';
+  const styleStream = fs.createWriteStream(path.join(projectDist, 'style.css'));
 
-  cssFiles.forEach(file => {
-    const filePath = path.join(stylesDir, file);
-    const data = fs.readFileSync(filePath, 'utf-8');
-    cssContent += data + '\n';
-  });
+  for (const file of cssFiles) {
+    const data = await fs.promises.readFile(path.join(stylesDir, file), 'utf-8');
+    styleStream.write(data + '\n');
+  }
 
-  fs.writeFileSync(outputCssPath, cssContent);
-  console.log('style.css created');
-});
+  styleStream.end();
 
-function copyAssets(src, dest) {
-  fs.mkdirSync(dest, { recursive: true });
-  fs.readdir(src, (err, files) => {
-    if (err) throw err;
+  async function copyDir(src, dest) {
+    await fs.promises.mkdir(dest, { recursive: true });
+    const items = await fs.promises.readdir(src, { withFileTypes: true });
+    for (const item of items) {
+      const srcPath = path.join(src, item.name);
+      const destPath = path.join(dest, item.name);
+      if (item.isDirectory()) {
+        await copyDir(srcPath, destPath);
+      } else {
+        await fs.promises.copyFile(srcPath, destPath);
+      }
+    }
+  }
 
-    files.forEach(file => {
-      const srcPath = path.join(src, file);
-      const destPath = path.join(dest, file);
-
-      fs.stat(srcPath, (err, stats) => {
-        if (err) throw err;
-
-        if (stats.isDirectory()) {
-          copyAssets(srcPath, destPath);
-        } else {
-          fs.copyFileSync(srcPath, destPath);
-        }
-      });
-    });
-  });
-}
-
-copyAssets(assetsDir, outputAssetsDir);
-console.log('assets copied');
+  await copyDir(assetsDir, path.join(projectDist, 'assets'));
+  console.log('build complete!');
+}).catch(console.error);
